@@ -5,6 +5,7 @@ PDF 水印核心引擎 (watermark_engine.py)
 
 import os
 import io
+import gc
 import math
 from dataclasses import dataclass
 from typing import Optional, Callable, Tuple, List
@@ -202,6 +203,10 @@ def apply_watermark_to_pdf(
         # 直接输出矢量带水印 PDF
         with open(output_path, "wb") as f_out:
             writer.write(f_out)
+        del writer
+        del reader
+        wm_cache.clear()
+        gc.collect()
         return output_path
     else:
         # 先输出至内存流，再调用图片化引擎
@@ -209,17 +214,28 @@ def apply_watermark_to_pdf(
         writer.write(temp_buf)
         temp_buf.seek(0)
 
+        # 释放 pypdf 页面树与水印对象，避免与栅格化引擎重叠占用内存
+        del writer
+        del reader
+        wm_cache.clear()
+        gc.collect()
+
         def rasterize_progress(cur, tot, desc):
             if progress_callback:
                 progress_callback(total_pages + cur, total_pages * 2, f"图片化防篡改渲染 ({cur}/{tot})...")
 
-        rasterize_pdf_stream(
-            temp_buf,
-            output_path,
-            dpi=config.dpi,
-            quality=config.quality,
-            progress_callback=rasterize_progress
-        )
+        try:
+            rasterize_pdf_stream(
+                temp_buf,
+                output_path,
+                dpi=config.dpi,
+                quality=config.quality,
+                progress_callback=rasterize_progress
+            )
+        finally:
+            temp_buf.close()
+            gc.collect()
+
         return output_path
 
 
