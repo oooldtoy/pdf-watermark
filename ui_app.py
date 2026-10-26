@@ -84,6 +84,15 @@ class ScrollableFrame(ttk.Frame):
 
 
 class WatermarkApp:
+    COLOR_PRESETS = {
+        "经典灰": "#888888",
+        "警示红": "#DC2626",
+        "公章蓝": "#2563EB",
+        "深黑": "#1E293B",
+        "翡翠绿": "#059669",
+        "活力橙": "#D97706",
+    }
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("PDF 水印小工具 - 支持防去除整页图片化")
@@ -345,24 +354,48 @@ class WatermarkApp:
         color_row = ttk.Frame(box)
         color_row.pack(fill="x", pady=4)
 
+        # 右侧：颜色下拉选择与调色板（右侧固定排布，确保在任何窗口宽度下完整显示不被截断）
+        color_group = ttk.Frame(color_row)
+        color_group.pack(side="right")
+
+        ttk.Label(color_group, text="颜色:").pack(side="left", padx=(6, 3))
+        self.var_color = tk.StringVar(value=self.config.color)
+        self.color_swatch = tk.Label(
+            color_group,
+            text="  ",
+            bg=self.config.color,
+            relief="solid",
+            bd=1,
+            width=2,
+            cursor="hand2"
+        )
+        self.color_swatch.pack(side="left", padx=2)
+        self.color_swatch.bind("<Button-1>", lambda e: self._pick_color())
+
+        color_options = list(self.COLOR_PRESETS.keys()) + ["自定义颜色..."]
+        self.var_color_preset = tk.StringVar()
+        self._sync_color_dropdown(self.config.color)
+
+        self.cmb_color = ttk.Combobox(
+            color_group,
+            textvariable=self.var_color_preset,
+            values=color_options,
+            state="readonly",
+            width=9
+        )
+        self.cmb_color.pack(side="left", padx=3)
+        self.cmb_color.bind("<<ComboboxSelected>>", self._on_color_combo_selected)
+
+        ttk.Button(color_group, text="调色板...", command=self._pick_color, style="Chip.TButton").pack(side="left", padx=2)
+
+        # 左侧：透明度滑块与百分比标签
         ttk.Label(color_row, text="透明度:").pack(side="left")
+        self.lbl_opacity = ttk.Label(color_row, text=f"{int(self.config.opacity*100)}%", width=5)
+        self.lbl_opacity.pack(side="right", padx=2)
+
         self.var_opacity = tk.DoubleVar(value=int(self.config.opacity * 100))
         scale_op = ttk.Scale(color_row, from_=5, to=100, variable=self.var_opacity, command=lambda v: self._on_opacity_change())
-        scale_op.pack(side="left", fill="x", expand=True, padx=6)
-        self.lbl_opacity = ttk.Label(color_row, text=f"{int(self.config.opacity*100)}%", width=5)
-        self.lbl_opacity.pack(side="left")
-
-        # 颜色块及选取
-        ttk.Label(color_row, text="颜色:").pack(side="left", padx=(10, 4))
-        self.var_color = tk.StringVar(value=self.config.color)
-        self.color_swatch = tk.Label(color_row, text="  ", bg=self.config.color, relief="solid", bd=1, width=3)
-        self.color_swatch.pack(side="left", padx=2)
-        ttk.Button(color_row, text="调色板...", command=self._pick_color, style="Chip.TButton").pack(side="left", padx=4)
-
-        # 快捷颜色芯片
-        quick_colors = [("#888888", "经典灰"), ("#DC2626", "警示红"), ("#2563EB", "公章蓝"), ("#1E293B", "深黑")]
-        for hex_c, c_name in quick_colors:
-            ttk.Button(color_row, text=c_name, style="Chip.TButton", command=lambda c=hex_c: self._set_color(c)).pack(side="left", padx=1)
+        scale_op.pack(side="left", fill="x", expand=True, padx=4)
 
     def _build_security_section(self, parent):
         box = ttk.LabelFrame(parent, text=" 5. 输出模式与防篡改设置", padding=8)
@@ -577,15 +610,33 @@ class WatermarkApp:
         self.lbl_opacity.config(text=f"{op}%")
         self.on_param_change()
 
+    def _on_color_combo_selected(self, event=None):
+        val = self.var_color_preset.get()
+        if val == "自定义颜色...":
+            self._pick_color()
+        elif val in self.COLOR_PRESETS:
+            self._set_color(self.COLOR_PRESETS[val])
+
+    def _sync_color_dropdown(self, hex_color: str):
+        hex_norm = hex_color.upper()
+        for name, hx in self.COLOR_PRESETS.items():
+            if hx.upper() == hex_norm:
+                self.var_color_preset.set(name)
+                return
+        self.var_color_preset.set("自定义颜色")
+
     def _pick_color(self):
         cur = self.var_color.get()
         chosen = colorchooser.askcolor(initialcolor=cur, title="选取水印颜色")
         if chosen and chosen[1]:
             self._set_color(chosen[1])
+        else:
+            self._sync_color_dropdown(self.var_color.get())
 
     def _set_color(self, hex_color: str):
         self.var_color.set(hex_color)
         self.color_swatch.config(bg=hex_color)
+        self._sync_color_dropdown(hex_color)
         self.on_param_change()
 
     def _on_rasterize_toggle(self):
