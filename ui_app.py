@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import json
 import datetime
 import threading
 import tkinter as tk
@@ -98,6 +99,11 @@ class WatermarkApp:
         self.root.title("PDF 水印小工具 - 支持防去除整页图片化")
         self.root.geometry("1200x840")
         self.root.minsize(1050, 720)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 设置文件只保存非水印正文的界面选项
+        self.settings_path = self._get_settings_path()
+        self.saved_settings = self._load_settings()
 
         # 核心数据状态
         self.file_list: List[str] = []
@@ -107,10 +113,13 @@ class WatermarkApp:
         self.preview_image_ref = None  # 防止 PIL 图片被垃圾回收
         self.debounce_timer = None
         self.is_processing = False
+        self.preview_resize_timer = None
+        self.last_preview_size = (0, 0)
         self.last_output_dir = ""
 
-        # 水印配置对象
+        # 水印配置对象：正文保持默认值，不从本地设置恢复
         self.config = WatermarkConfig()
+        self._restore_saved_config()
 
         # 界面初始化
         self._init_styles()
@@ -118,6 +127,81 @@ class WatermarkApp:
 
         # 启动后默认加载一次仿真预览
         self.root.after(150, self.update_preview)
+
+    @staticmethod
+    def _get_settings_path() -> str:
+        """返回用户级设置文件路径，避免把运行时文件写入项目目录。"""
+        app_data = os.environ.get("APPDATA") or os.path.expanduser("~")
+        settings_dir = os.path.join(app_data, "PDFWatermark")
+        os.makedirs(settings_dir, exist_ok=True)
+        return os.path.join(settings_dir, "settings.json")
+
+    def _load_settings(self) -> dict:
+        try:
+            with open(self.settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _restore_saved_config(self):
+        """恢复允许持久化的参数，明确排除水印文字。"""
+        if not self.saved_settings.get("remember_settings", False):
+            return
+
+        config_fields = (
+            "font_name", "font_size", "color", "opacity", "angle", "mode",
+            "spacing_x", "spacing_y", "stagger", "rasterize", "dpi"
+        )
+        for field in config_fields:
+            if field in self.saved_settings and hasattr(self.config, field):
+                try:
+                    setattr(self.config, field, self.saved_settings[field])
+                except (TypeError, ValueError):
+                    pass
+
+        if self.config.font_name not in FontManager.get_font_names():
+            self.config.font_name = FontManager.get_default_font()
+        if self.config.mode not in ("tiled", "single"):
+            self.config.mode = "tiled"
+        if self.config.dpi not in (150, 200, 300):
+            self.config.dpi = 200
+        self.config.font_size = max(12, min(72, int(self.config.font_size)))
+        self.config.opacity = max(0.05, min(1.0, float(self.config.opacity)))
+        self.config.angle = max(-90.0, min(90.0, float(self.config.angle)))
+        self.config.spacing_x = max(80.0, min(400.0, float(self.config.spacing_x)))
+        self.config.spacing_y = max(60.0, min(350.0, float(self.config.spacing_y)))
+
+    def _save_settings(self):
+        """按用户选择保存界面设置，不写入水印文字和临时文件状态。"""
+        try:
+            remember = getattr(self, "var_remember_settings", tk.BooleanVar(value=False)).get()
+            data = {"remember_settings": bool(remember)}
+            if remember:
+                data.update({
+                "font_name": self.var_font.get(),
+                "font_size": int(self.var_fontsize.get()),
+                "color": self.var_color.get(),
+                "opacity": float(self.var_opacity.get()) / 100.0,
+                "angle": float(self.var_angle.get()),
+                "mode": self.var_mode.get(),
+                "spacing_x": float(self.var_sx.get()),
+                "spacing_y": float(self.var_sy.get()),
+                "stagger": bool(self.var_stagger.get()),
+                "rasterize": bool(self.var_rasterize.get()),
+                "dpi": int(self.var_dpi.get()),
+                "filename_suffix": self.var_filename_suffix.get(),
+                "out_same_dir": bool(self.var_out_same_dir.get()),
+                "custom_dir": self.var_custom_dir.get(),
+                })
+            with open(self.settings_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except (OSError, tk.TclError, ValueError):
+            pass
+
+    def _on_close(self):
+        self._save_settings()
+        self.root.destroy()
 
     def _init_styles(self):
         style = ttk.Style(self.root)
@@ -153,22 +237,9 @@ class WatermarkApp:
         style.configure("Chip.TButton", font=("Microsoft YaHei UI", 8), padding=2)
 
     def _build_ui(self):
-        # 顶部标题栏
-        top_bar = tk.Frame(self.root, bg=self.c_primary, height=48)
-        top_bar.pack(side="top", fill="x")
-
-        lbl_app_title = tk.Label(
-            top_bar,
-            text=" 📄 PDF 水印助手  |  矢量水印 & 整页图片化防篡改",
-            font=("Microsoft YaHei UI", 11, "bold"),
-            fg="#FFFFFF",
-            bg=self.c_primary
-        )
-        lbl_app_title.pack(side="left", padx=15, pady=10)
-
         # 主工作区分为左右两栏
         main_paned = ttk.PanedWindow(self.root, orient="horizontal")
-        main_paned.pack(fill="both", expand=True, padx=12, pady=10)
+        main_paned.pack(fill="both", expand=True, padx=12, pady=6)
 
         # 左侧控制面板 (可滚动)
         left_container = ttk.Frame(main_paned, width=540)
@@ -338,7 +409,7 @@ class WatermarkApp:
 
         ttk.Label(font_row, text="字体:").pack(side="left")
         available_fonts = FontManager.get_font_names()
-        self.var_font = tk.StringVar(value=FontManager.get_default_font())
+        self.var_font = tk.StringVar(value=self.config.font_name)
         cmb_font = ttk.Combobox(font_row, textvariable=self.var_font, values=available_fonts, state="readonly", width=12)
         cmb_font.pack(side="left", padx=6)
         cmb_font.bind("<<ComboboxSelected>>", lambda e: self.on_param_change())
@@ -401,7 +472,7 @@ class WatermarkApp:
         box = ttk.LabelFrame(parent, text=" 5. 输出模式与防篡改设置", padding=8)
         box.pack(fill="x", padx=10, pady=6)
 
-        self.var_rasterize = tk.BooleanVar(value=True)
+        self.var_rasterize = tk.BooleanVar(value=self.config.rasterize)
 
         rb_rast = ttk.Radiobutton(
             box,
@@ -417,9 +488,9 @@ class WatermarkApp:
         self.dpi_frame.pack(fill="x", padx=20, pady=2)
 
         self.var_dpi = tk.IntVar(value=self.config.dpi)
-        ttk.Radiobutton(self.dpi_frame, text="150 DPI (轻量快速)", value=150, variable=self.var_dpi).pack(side="left", padx=4)
-        ttk.Radiobutton(self.dpi_frame, text="200 DPI (高清标准 推荐)", value=200, variable=self.var_dpi).pack(side="left", padx=8)
-        ttk.Radiobutton(self.dpi_frame, text="300 DPI (印刷级超清)", value=300, variable=self.var_dpi).pack(side="left", padx=4)
+        ttk.Radiobutton(self.dpi_frame, text="150 DPI (轻量快速)", value=150, variable=self.var_dpi, command=self.on_param_change).pack(side="left", padx=4)
+        ttk.Radiobutton(self.dpi_frame, text="200 DPI (高清标准 推荐)", value=200, variable=self.var_dpi, command=self.on_param_change).pack(side="left", padx=8)
+        ttk.Radiobutton(self.dpi_frame, text="300 DPI (印刷级超清)", value=300, variable=self.var_dpi, command=self.on_param_change).pack(side="left", padx=4)
 
         rb_vec = ttk.Radiobutton(
             box,
@@ -430,26 +501,53 @@ class WatermarkApp:
         )
         rb_vec.pack(anchor="w", pady=(4, 2))
 
+        # 输出文件名追加内容
+        filename_suffix_frame = ttk.Frame(box)
+        filename_suffix_frame.pack(fill="x", pady=(4, 2))
+        ttk.Label(filename_suffix_frame, text="文件名追加:").pack(side="left")
+        remember_settings = self.saved_settings.get("remember_settings", False)
+        self.var_filename_suffix = tk.StringVar(value=self.saved_settings.get("filename_suffix", "_watermarked") if remember_settings else "_watermarked")
+        self.ent_filename_suffix = ttk.Entry(
+            filename_suffix_frame,
+            textvariable=self.var_filename_suffix,
+            width=24
+        )
+        self.ent_filename_suffix.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.var_filename_suffix.trace_add("write", lambda *_: self._save_settings())
+
         # 输出目录选项
         out_dir_frame = ttk.Frame(box)
         out_dir_frame.pack(fill="x", pady=4)
 
-        self.var_out_same_dir = tk.BooleanVar(value=True)
-        chk_same = ttk.Checkbutton(out_dir_frame, text="保存至源文件同目录下 (文件名追加 _watermarked)", variable=self.var_out_same_dir, command=self._toggle_custom_out_dir)
+        self.var_out_same_dir = tk.BooleanVar(value=self.saved_settings.get("out_same_dir", True) if remember_settings else True)
+        chk_same = ttk.Checkbutton(out_dir_frame, text="保存至源文件同目录下", variable=self.var_out_same_dir, command=self._on_output_setting_change)
         chk_same.pack(anchor="w")
 
         self.custom_dir_frame = ttk.Frame(out_dir_frame)
         self.custom_dir_frame.pack(fill="x", pady=2)
-        self.var_custom_dir = tk.StringVar(value="")
+        self.var_custom_dir = tk.StringVar(value=self.saved_settings.get("custom_dir", "") if remember_settings else "")
         self.ent_custom_dir = ttk.Entry(self.custom_dir_frame, textvariable=self.var_custom_dir)
         self.ent_custom_dir.pack(side="left", fill="x", expand=True, padx=(18, 4))
+        self.var_custom_dir.trace_add("write", lambda *_: self._save_settings())
         self.btn_browse_out = ttk.Button(self.custom_dir_frame, text="浏览...", command=self._choose_custom_output_dir)
         self.btn_browse_out.pack(side="left")
-        self.custom_dir_frame.pack_forget()
+        if self.var_out_same_dir.get():
+            self.custom_dir_frame.pack_forget()
+        else:
+            self.custom_dir_frame.pack(fill="x", pady=2)
 
     def _build_action_section(self, parent):
         act_box = ttk.Frame(parent)
         act_box.pack(fill="x", padx=10, pady=12)
+
+        self.var_remember_settings = tk.BooleanVar(value=self.saved_settings.get("remember_settings", False))
+        chk_remember = ttk.Checkbutton(
+            act_box,
+            text="启动时恢复上次设置",
+            variable=self.var_remember_settings,
+            command=self._on_remember_settings_change
+        )
+        chk_remember.pack(anchor="w", pady=(0, 6))
 
         self.btn_start = ttk.Button(act_box, text="🚀 开始批量生成水印 PDF", style="Primary.TButton", command=self.start_processing)
         self.btn_start.pack(fill="x", ipady=6, pady=2)
@@ -471,15 +569,16 @@ class WatermarkApp:
         self.lbl_preview_title.pack(side="left", padx=4)
 
         self.btn_prev_page = ttk.Button(top_ctrl, text="◀ 上一页", width=8, command=self._prev_page, state="disabled")
-        self.btn_prev_page.pack(side="right", padx=2)
-        self.lbl_page_indicator = ttk.Label(top_ctrl, text="1 / 1", style="Muted.TLabel")
-        self.lbl_page_indicator.pack(side="right", padx=4)
+        self.btn_prev_page.pack(side="left", padx=2)
         self.btn_next_page = ttk.Button(top_ctrl, text="下一页 ▶", width=8, command=self._next_page, state="disabled")
         self.btn_next_page.pack(side="right", padx=2)
+        self.lbl_page_indicator = ttk.Label(top_ctrl, text="1 / 1", style="Muted.TLabel")
+        self.lbl_page_indicator.pack(side="right", padx=4)
 
         # 画布区域 (带浅灰背景与页面拟真边框)
         self.canvas_preview = tk.Canvas(preview_box, bg="#E2E8F0", highlightthickness=0)
         self.canvas_preview.pack(fill="both", expand=True, padx=4, pady=4)
+        self.canvas_preview.bind("<Configure>", self._on_preview_canvas_configure)
 
     def _build_queue_section(self, parent):
         queue_box = ttk.LabelFrame(parent, text=" 📋 任务列表与处理进度", padding=6)
@@ -500,8 +599,12 @@ class WatermarkApp:
 
     # ------------------ 事件与参数联动处理 ------------------
 
+    def _on_remember_settings_change(self):
+        self._save_settings()
+
     def on_param_change(self):
-        """当任何水印参数发生变动时，触发防抖更新预览"""
+        """当任何水印参数发生变动时，保存设置并触发防抖更新预览。"""
+        self._save_settings()
         if self.debounce_timer:
             self.root.after_cancel(self.debounce_timer)
         self.debounce_timer = self.root.after(100, self.update_preview)
@@ -530,8 +633,19 @@ class WatermarkApp:
         )
         return cfg
 
+    def _on_preview_canvas_configure(self, event):
+        """画布完成布局或尺寸变化后，按最新尺寸重新渲染预览。"""
+        size = (event.width, event.height)
+        if size == self.last_preview_size:
+            return
+        self.last_preview_size = size
+        if self.preview_resize_timer:
+            self.root.after_cancel(self.preview_resize_timer)
+        self.preview_resize_timer = self.root.after(80, self.update_preview)
+
     def update_preview(self):
         """重新计算并绘制右侧预览图"""
+        self.preview_resize_timer = None
         cfg = self._collect_config_from_ui()
 
         # 计算画布可用尺寸
@@ -644,6 +758,11 @@ class WatermarkApp:
             self.dpi_frame.pack(fill="x", padx=20, pady=2)
         else:
             self.dpi_frame.pack_forget()
+        self._save_settings()
+
+    def _on_output_setting_change(self):
+        self._toggle_custom_out_dir()
+        self._save_settings()
 
     def _toggle_custom_out_dir(self):
         if self.var_out_same_dir.get():
@@ -655,6 +774,7 @@ class WatermarkApp:
         d = filedialog.askdirectory(title="选择水印输出目录")
         if d:
             self.var_custom_dir.set(d)
+            self._save_settings()
 
     # ------------------ 文件管理与拖拽 ------------------
 
@@ -761,11 +881,31 @@ class WatermarkApp:
 
     # ------------------ 水印生成任务执行 ------------------
 
+    def _get_filename_suffix(self) -> Optional[str]:
+        """读取并校验输出文件名追加内容。"""
+        suffix = self.var_filename_suffix.get().strip()
+        if not suffix:
+            messagebox.showerror("文件名追加无效", "文件名追加内容不能为空。")
+            return None
+
+        if re.search(r'[<>:"/\\|?*\x00-\x1f]', suffix):
+            messagebox.showerror(
+                "文件名追加无效",
+                '文件名追加内容不能包含以下字符：< > : " / \\ | ? *'
+            )
+            return None
+
+        return suffix
+
     def start_processing(self):
         if self.is_processing:
             return
         if not self.file_list:
             messagebox.showwarning("提示", "请先选择或拖入需要打水印的 PDF 文件！")
+            return
+
+        filename_suffix = self._get_filename_suffix()
+        if filename_suffix is None:
             return
 
         # 检查输出目录
@@ -782,10 +922,10 @@ class WatermarkApp:
         cfg = self._collect_config_from_ui()
 
         # 启动后台工作线程
-        t = threading.Thread(target=self._worker_process, args=(cfg,), daemon=True)
+        t = threading.Thread(target=self._worker_process, args=(cfg, filename_suffix), daemon=True)
         t.start()
 
-    def _worker_process(self, cfg: WatermarkConfig):
+    def _worker_process(self, cfg: WatermarkConfig, filename_suffix: str):
         total_files = len(self.file_list)
         success_count = 0
         fail_count = 0
@@ -795,8 +935,7 @@ class WatermarkApp:
             file_name = os.path.basename(in_path)
             name_no_ext, ext = os.path.splitext(file_name)
 
-            suffix = "_protected" if cfg.rasterize else "_watermarked"
-            out_filename = f"{name_no_ext}{suffix}{ext}"
+            out_filename = f"{name_no_ext}{filename_suffix}{ext}"
 
             if self.var_out_same_dir.get():
                 out_path = os.path.join(base_dir, out_filename)
@@ -852,6 +991,9 @@ class WatermarkApp:
                 self.open_output_folder()
         else:
             messagebox.showerror("处理失败", msg)
+
+        # 任务完成后清空本次处理列表，方便下一批文件直接导入。
+        self._clear_files()
 
     def open_output_folder(self):
         target_dir = self.last_output_dir

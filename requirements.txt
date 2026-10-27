@@ -1,0 +1,6 @@
+pypdf>=5.0
+pypdfium2>=4.30
+reportlab>=4.0
+Pillow>=10.0
+tkinterdnd2>=0.4
+pyinstaller>=6.0
