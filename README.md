@@ -51,7 +51,7 @@ python -m pip install -r requirements.txt
 python -m PyInstaller --noconsole --onefile --clean --name "PDF水印助手" main.py
 ```
 
-生成文件位于 `dist/PDF水印助手.exe`。
+本地生成文件位于 `dist/PDF水印助手.exe`。GitHub Actions 为避免 Windows PowerShell 的中文路径编码问题，使用 ASCII 文件名 `dist/PDFWatermarkAssistant.exe` 构建并上传。
 
 ## 发布 GitHub Release
 
@@ -65,7 +65,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-也可以在 GitHub Actions 页面手动运行 `Build and Release Windows EXE`，并填写版本标签。发布完成后，`PDF水印助手.exe` 会作为 Release 附件提供下载。
+也可以在 GitHub Actions 页面手动运行 `Build and Release Windows EXE`，并填写版本标签。发布完成后，`PDFWatermarkAssistant.exe` 会作为 Release 附件提供下载。
 
 ## 项目结构
 

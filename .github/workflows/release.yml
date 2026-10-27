@@ -34,12 +34,13 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Build executable
-        run: python -m PyInstaller --noconsole --onefile --clean --name "PDF水印助手" main.py
+        # Keep CI paths ASCII-only so Windows PowerShell encoding cannot corrupt them.
+        run: python -m PyInstaller --noconsole --onefile --clean --name "PDFWatermarkAssistant" main.py
 
       - name: Verify executable
         shell: powershell
         run: |
-          $artifact = "dist/PDF水印助手.exe"
+          $artifact = "dist/PDFWatermarkAssistant.exe"
           if (-not (Test-Path $artifact)) {
             throw "Build artifact was not created: $artifact"
           }
@@ -54,4 +55,4 @@ jobs:
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = "${{ inputs.tag }}"
           }
-          gh release create $tag "dist/PDF水印助手.exe" --title "PDF 水印助手 $tag" --generate-notes
+          gh release create $tag "dist/PDFWatermarkAssistant.exe" --title "PDF Watermark Assistant $tag" --generate-notes
