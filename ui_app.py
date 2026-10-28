@@ -191,6 +191,8 @@ class WatermarkApp:
                 "rasterize": bool(self.var_rasterize.get()),
                 "dpi": int(self.var_dpi.get()),
                 "filename_suffix": self.var_filename_suffix.get(),
+                "merge_filename": self.var_merge_filename.get(),
+                "merge_output": bool(self.var_merge_output.get()),
                 "out_same_dir": bool(self.var_out_same_dir.get()),
                 "custom_dir": self.var_custom_dir.get(),
                 })
@@ -515,26 +517,63 @@ class WatermarkApp:
         self.ent_filename_suffix.pack(side="left", fill="x", expand=True, padx=(8, 0))
         self.var_filename_suffix.trace_add("write", lambda *_: self._save_settings())
 
+        self.var_merge_output = tk.BooleanVar(
+            value=self.saved_settings.get("merge_output", False) if remember_settings else False
+        )
+        merge_row = ttk.Frame(box)
+        merge_row.pack(fill="x", pady=(4, 2))
+        chk_merge = ttk.Checkbutton(
+            merge_row,
+            text="多个 PDF 合并为一个输出文件",
+            variable=self.var_merge_output,
+            command=self._on_merge_output_change
+        )
+        chk_merge.pack(side="left", anchor="w")
+
+        merge_name_frame = ttk.Frame(merge_row)
+        self.merge_name_frame = merge_name_frame
+        ttk.Label(merge_name_frame, text="合并文件名:").pack(side="left", padx=(8, 0))
+        self.var_merge_filename = tk.StringVar(
+            value=self.saved_settings.get("merge_filename", "") if remember_settings else ""
+        )
+        self.ent_merge_filename = ttk.Entry(merge_name_frame, textvariable=self.var_merge_filename)
+        self.ent_merge_filename.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        merge_row.columnconfigure(1, weight=1)
+        if self.var_merge_output.get():
+            merge_name_frame.pack(side="left", fill="x", expand=True)
+        self.var_merge_filename.trace_add("write", lambda *_: self._save_settings())
+
         # 输出目录选项
         out_dir_frame = ttk.Frame(box)
         out_dir_frame.pack(fill="x", pady=4)
+        out_dir_frame.columnconfigure(1, weight=1)
 
         self.var_out_same_dir = tk.BooleanVar(value=self.saved_settings.get("out_same_dir", True) if remember_settings else True)
-        chk_same = ttk.Checkbutton(out_dir_frame, text="保存至源文件同目录下", variable=self.var_out_same_dir, command=self._on_output_setting_change)
-        chk_same.pack(anchor="w")
+        chk_same = ttk.Checkbutton(
+            out_dir_frame,
+            text="保存至源文件同目录下",
+            variable=self.var_out_same_dir,
+            command=self._on_output_setting_change,
+            padding=(0, 4)
+        )
+        chk_same.grid(row=0, column=0, sticky="nw")
 
         self.custom_dir_frame = ttk.Frame(out_dir_frame)
-        self.custom_dir_frame.pack(fill="x", pady=2)
         self.var_custom_dir = tk.StringVar(value=self.saved_settings.get("custom_dir", "") if remember_settings else "")
         self.ent_custom_dir = ttk.Entry(self.custom_dir_frame, textvariable=self.var_custom_dir)
         self.ent_custom_dir.pack(side="left", fill="x", expand=True, padx=(18, 4))
         self.var_custom_dir.trace_add("write", lambda *_: self._save_settings())
-        self.btn_browse_out = ttk.Button(self.custom_dir_frame, text="浏览...", command=self._choose_custom_output_dir)
+        self.btn_browse_out = ttk.Button(
+            self.custom_dir_frame,
+            text="浏览...",
+            padding=(6, 0.5),
+            command=self._choose_custom_output_dir
+        )
         self.btn_browse_out.pack(side="left")
-        if self.var_out_same_dir.get():
-            self.custom_dir_frame.pack_forget()
-        else:
-            self.custom_dir_frame.pack(fill="x", pady=2)
+        self.custom_dir_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.custom_dir_frame.update_idletasks()
+        self.custom_dir_frame.configure(height=self.custom_dir_frame.winfo_reqheight())
+        self.custom_dir_frame.pack_propagate(False)
 
     def _build_action_section(self, parent):
         act_box = ttk.Frame(parent)
@@ -760,15 +799,24 @@ class WatermarkApp:
             self.dpi_frame.pack_forget()
         self._save_settings()
 
+    def _on_merge_output_change(self):
+        if self.var_merge_output.get():
+            self.merge_name_frame.pack(side="left", fill="x", expand=True)
+        else:
+            self.merge_name_frame.pack_forget()
+        self._save_settings()
+
     def _on_output_setting_change(self):
         self._toggle_custom_out_dir()
         self._save_settings()
 
     def _toggle_custom_out_dir(self):
         if self.var_out_same_dir.get():
-            self.custom_dir_frame.pack_forget()
+            self.ent_custom_dir.pack_forget()
+            self.btn_browse_out.pack_forget()
         else:
-            self.custom_dir_frame.pack(fill="x", pady=2)
+            self.ent_custom_dir.pack(side="left", fill="x", expand=True, padx=(18, 4))
+            self.btn_browse_out.pack(side="left")
 
     def _choose_custom_output_dir(self):
         d = filedialog.askdirectory(title="选择水印输出目录")
@@ -922,11 +970,27 @@ class WatermarkApp:
         cfg = self._collect_config_from_ui()
 
         # 启动后台工作线程
-        t = threading.Thread(target=self._worker_process, args=(cfg, filename_suffix), daemon=True)
+        merge_output = self.var_merge_output.get() and len(self.file_list) > 1
+        merge_filename = self.var_merge_filename.get().strip()
+        if merge_output and merge_filename and re.search(r'[<>:"/\\|?*\x00-\x1f]', merge_filename):
+            messagebox.showerror("合并文件名无效", '合并文件名不能包含以下字符：< > : " / \\ | ? *')
+            return
+
+        t = threading.Thread(
+            target=self._worker_process,
+            args=(cfg, filename_suffix, merge_output, merge_filename),
+            daemon=True
+        )
         t.start()
 
-    def _worker_process(self, cfg: WatermarkConfig, filename_suffix: str):
+    def _worker_process(
+        self, cfg: WatermarkConfig, filename_suffix: str,
+        merge_output: bool = False, merge_filename: str = ""
+    ):
         total_files = len(self.file_list)
+        if merge_output:
+            self._worker_process_and_merge(cfg, filename_suffix, merge_filename)
+            return
         success_count = 0
         fail_count = 0
 
@@ -962,6 +1026,83 @@ class WatermarkApp:
                 self.root.after(0, self._update_list_item, f_idx, f"❌ {file_name} -> 失败: {e}")
 
         self.root.after(0, self._on_all_finished, success_count, fail_count)
+
+    def _worker_process_and_merge(
+        self, cfg: WatermarkConfig, filename_suffix: str, merge_filename: str = ""
+    ):
+        import tempfile
+        from pypdf import PdfWriter
+
+        input_files = list(self.file_list)
+        total_files = len(input_files)
+        success_count = 0
+        fail_count = 0
+        readers = []
+
+        first_name, ext = os.path.splitext(os.path.basename(input_files[0]))
+        output_name = os.path.splitext(merge_filename)[0] if merge_filename else first_name
+        output_filename = f"{output_name}{filename_suffix}{ext}"
+        if self.var_out_same_dir.get():
+            output_dir = os.path.dirname(input_files[0])
+        else:
+            output_dir = self.var_custom_dir.get().strip()
+        output_path = os.path.join(output_dir, output_filename)
+        self.last_output_dir = output_dir
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="pdf_watermark_merge_") as temp_dir:
+                for f_idx, in_path in enumerate(input_files):
+                    file_name = os.path.basename(in_path)
+                    temp_path = os.path.join(temp_dir, f"{f_idx:04d}.pdf")
+                    self.root.after(0, self._update_task_status, f_idx, f"🔄 处理中: {file_name}")
+
+                    def on_progress(cur, tot, desc, index=f_idx, name=file_name):
+                        fraction = (index + cur / max(1, tot)) / total_files
+                        self.root.after(
+                            0, self._update_progress_ui, fraction * 90.0,
+                            f"[{index + 1}/{total_files}] {name}: {desc}"
+                        )
+
+                    try:
+                        apply_watermark_to_pdf(in_path, temp_path, cfg, progress_callback=on_progress)
+                        readers.append(PdfReader(temp_path))
+                        success_count += 1
+                        self.root.after(0, self._update_list_item, f_idx, f"✅ {file_name} -> 已加水印，待合并")
+                    except Exception as e:
+                        fail_count += 1
+                        print(f"Error processing {in_path}: {e}")
+                        self.root.after(0, self._update_list_item, f_idx, f"❌ {file_name} -> 失败: {e}")
+
+                if fail_count:
+                    self.root.after(
+                        0, self._update_progress_ui, 100.0,
+                        f"合并已取消：{fail_count} 个文件处理失败"
+                    )
+                elif readers:
+                    writer = PdfWriter()
+                    for reader in readers:
+                        for page in reader.pages:
+                            writer.add_page(page)
+                    try:
+                        with open(output_path, "wb") as output_file:
+                            writer.write(output_file)
+                    finally:
+                        writer.close()
+                    self.root.after(0, self._update_progress_ui, 100.0, f"合并完成: {output_filename}")
+                else:
+                    fail_count = total_files
+        except Exception as e:
+            fail_count = total_files
+            success_count = 0
+            print(f"Error merging watermarked PDFs: {e}")
+            self.root.after(0, self._update_progress_ui, 100.0, f"合并失败: {e}")
+        finally:
+            for reader in readers:
+                try:
+                    reader.stream.close()
+                except Exception:
+                    pass
+            self.root.after(0, self._on_all_finished, 1 if success_count == total_files else 0, fail_count)
 
     def _update_task_status(self, idx: int, status_text: str):
         self.lbl_status.config(text=status_text)
